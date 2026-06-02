@@ -1,0 +1,22 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+*.userprefs
+
+## Secrets — NUNCA commitar
+appsettings.*.json
+!appsettings.json
+secrets.json
+*.pfx
+*.p12
+
+## Logs
+*.log
+logs/
+
+## Test results
+TestResults/
+coverage/

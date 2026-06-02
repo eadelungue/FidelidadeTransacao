@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>12</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FidelidadeTransacao.Application\FidelidadeTransacao.Application.csproj" />
+    <ProjectReference Include="..\FidelidadeTransacao.Domain\FidelidadeTransacao.Domain.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Dapper: micro-ORM para SQL explícito e performático -->
+    <PackageReference Include="Dapper" Version="2.1.35" />
+    <!-- Driver ADO.NET para SQL Server -->
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.1" />
+    <!-- Azure Service Bus -->
+    <PackageReference Include="Azure.Messaging.ServiceBus" Version="7.17.4" />
+    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="8.0.0" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,198 @@
+### ============================================================
+### Exemplos de requisições — Ledger API
+### Use com a extensão REST Client do VS Code
+### ou importe no Postman/Insomnia
+###
+### ANTES DE USAR:
+### 1. Rode o setup: .\scripts\setup-local.ps1
+### 2. Gere o token: dotnet run --project tools\GenerateDevToken -- LedgerAdmin
+### 3. Cole o token na variável @token abaixo
+### ============================================================
+
+@baseUrl = http://localhost:5000
+@token   = COLE_SEU_TOKEN_AQUI
+
+### IDs de seed (gerados pelo 003_SeedData.sql)
+@accountComSaldo    = aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+@accountSegundo     = bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+@accountZerado      = cccccccc-cccc-cccc-cccc-cccccccccccc
+@entryDebitSeed     = e3333333-3333-3333-3333-333333333333
+
+# ──────────────────────────────────────────────────────────────
+# HEALTH CHECK (sem autenticação)
+# ──────────────────────────────────────────────────────────────
+
+### Health Check
+GET {{baseUrl}}/health
+
+# ──────────────────────────────────────────────────────────────
+# CRÉDITO DE PONTOS
+# ──────────────────────────────────────────────────────────────
+
+### Credit — Acúmulo de pontos por compra
+POST {{baseUrl}}/api/v1/ledger/credit
+Authorization: Bearer {{token}}
+Content-Type: application/json
+X-Correlation-Id: corr-credit-001
+
+{
+  "accountId": "{{accountComSaldo}}",
+  "amount": 250.00,
+  "occurrenceDate": "2026-06-01T10:00:00-03:00",
+  "idempotencyKey": "magalu-order-99887766",
+  "statementMetadata": {
+    "partnerId": "MAGALU",
+    "productName": "Smart TV 55\"",
+    "description": "Pontos acumulados na compra #99887766"
+  }
+}
+
+###
+
+### Credit — Replay idempotente (mesma idempotencyKey — deve retornar 200 com IsIdempotentReplay=true)
+POST {{baseUrl}}/api/v1/ledger/credit
+Authorization: Bearer {{token}}
+Content-Type: application/json
+X-Correlation-Id: corr-credit-001-replay
+
+{
+  "accountId": "{{accountComSaldo}}",
+  "amount": 250.00,
+  "occurrenceDate": "2026-06-01T10:00:00-03:00",
+  "idempotencyKey": "magalu-order-99887766",
+  "statementMetadata": {
+    "partnerId": "MAGALU",
+    "productName": "Smart TV 55\"",
+    "description": "Pontos acumulados na compra #99887766"
+  }
+}
+
+# ──────────────────────────────────────────────────────────────
+# DÉBITO DE PONTOS
+# ──────────────────────────────────────────────────────────────
+
+### Debit — Resgate de pontos (deve passar — saldo suficiente)
+POST {{baseUrl}}/api/v1/ledger/debit
+Authorization: Bearer {{token}}
+Content-Type: application/json
+X-Correlation-Id: corr-debit-001
+
+{
+  "accountId": "{{accountComSaldo}}",
+  "amount": 300.00,
+  "occurrenceDate": "2026-06-01T11:00:00-03:00",
+  "referenceId": "ORDER-ECOMMERCE-55443",
+  "idempotencyKey": "livelo-resgate-55443",
+  "statementMetadata": {
+    "partnerId": "LIVELO",
+    "productName": "Passagem Aérea GRU-GIG",
+    "description": "Resgate de milhas — voo LA456"
+  }
+}
+
+###
+
+### Debit — RN01: Saldo insuficiente (deve retornar 422)
+POST {{baseUrl}}/api/v1/ledger/debit
+Authorization: Bearer {{token}}
+Content-Type: application/json
+X-Correlation-Id: corr-debit-rn01
+
+{
+  "accountId": "{{accountZerado}}",
+  "amount": 100.00,
+  "occurrenceDate": "2026-06-01T11:00:00-03:00",
+  "referenceId": "ORDER-FAIL-001",
+  "idempotencyKey": "fail-saldo-insuficiente-001",
+  "statementMetadata": {
+    "partnerId": "AMAZON",
+    "productName": "Kindle Paperwhite",
+    "description": "Tentativa de resgate com saldo zero"
+  }
+}
+
+# ──────────────────────────────────────────────────────────────
+# ESTORNO DE PONTOS
+# ──────────────────────────────────────────────────────────────
+
+### Refund — Estorno total do débito seed (e3333333...)
+POST {{baseUrl}}/api/v1/ledger/refund
+Authorization: Bearer {{token}}
+Content-Type: application/json
+X-Correlation-Id: corr-refund-001
+
+{
+  "accountId": "{{accountComSaldo}}",
+  "originalTransactionId": "{{entryDebitSeed}}",
+  "amount": 500.00,
+  "occurrenceDate": "2026-06-01T12:00:00-03:00",
+  "reason": "Cancelamento de pedido pelo cliente",
+  "idempotencyKey": "refund-order-seed-001",
+  "statementMetadata": {
+    "partnerId": "AMAZON",
+    "productName": "Estorno — Passagem Aérea GRU-GIG",
+    "description": "Cancelamento solicitado pelo cliente em 01/06/2026"
+  }
+}
+
+###
+
+### Refund — Estorno parcial
+POST {{baseUrl}}/api/v1/ledger/refund
+Authorization: Bearer {{token}}
+Content-Type: application/json
+X-Correlation-Id: corr-refund-parcial
+
+{
+  "accountId": "{{accountComSaldo}}",
+  "originalTransactionId": "{{entryDebitSeed}}",
+  "amount": 200.00,
+  "occurrenceDate": "2026-06-01T12:30:00-03:00",
+  "reason": "Estorno parcial — item indisponível",
+  "idempotencyKey": "refund-parcial-seed-001",
+  "statementMetadata": {
+    "partnerId": "AMAZON",
+    "productName": "Estorno Parcial — Passagem GRU-GIG",
+    "description": null
+  }
+}
+
+# ──────────────────────────────────────────────────────────────
+# ERROS DE VALIDAÇÃO (400)
+# ──────────────────────────────────────────────────────────────
+
+### Validação — Amount zero (deve retornar 400)
+POST {{baseUrl}}/api/v1/ledger/credit
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "accountId": "{{accountComSaldo}}",
+  "amount": 0,
+  "occurrenceDate": "2026-06-01T10:00:00-03:00",
+  "idempotencyKey": "key-amount-zero",
+  "statementMetadata": {
+    "partnerId": "MAGALU",
+    "productName": "Produto X",
+    "description": null
+  }
+}
+
+###
+
+### Validação — XSS injection no ProductName (deve retornar 400)
+POST {{baseUrl}}/api/v1/ledger/credit
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "accountId": "{{accountComSaldo}}",
+  "amount": 100,
+  "occurrenceDate": "2026-06-01T10:00:00-03:00",
+  "idempotencyKey": "key-xss-test",
+  "statementMetadata": {
+    "partnerId": "MAGALU",
+    "productName": "<script>alert('xss')</script>",
+    "description": null
+  }
+}
