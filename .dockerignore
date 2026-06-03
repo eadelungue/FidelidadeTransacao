@@ -1,0 +1,16 @@
+**/.git
+**/.gitignore
+**/.vs
+**/bin
+**/obj
+**/node_modules
+**/*.user
+**/*.suo
+**/[Tt]ests
+**/tools
+**/docs
+**/scripts
+Dockerfile
+.dockerignore
+README.md
+*.md

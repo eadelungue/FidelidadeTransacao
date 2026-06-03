@@ -1,0 +1,292 @@
+name: CI/CD — Ledger API
+
+on:
+  push:
+    branches: [main, staging]
+  pull_request:
+    branches: [main]
+
+env:
+  DOTNET_VERSION: '8.0.x'
+  IMAGE_NAME: ledger-api
+
+jobs:
+  # ════════════════════════════════════════════════════════════════════════════
+  # JOB 1: Build + Test
+  # ════════════════════════════════════════════════════════════════════════════
+  build-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET ${{ env.DOTNET_VERSION }}
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore
+        run: dotnet restore FidelidadeTransacao.sln
+
+      - name: Build
+        run: dotnet build FidelidadeTransacao.sln --configuration Release --no-restore
+
+      - name: Test
+        run: >
+          dotnet test FidelidadeTransacao.sln
+          --configuration Release
+          --no-build
+          --logger "trx;LogFileName=test-results.trx"
+          --results-directory ./test-results
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: ./test-results/*.trx
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # JOB 2: Build & Push Docker image para ACR
+  # Roda apenas em push para main ou staging
+  # ════════════════════════════════════════════════════════════════════════════
+  docker-build-push:
+    name: Docker Build & Push
+    runs-on: ubuntu-latest
+    needs: build-test
+    if: github.event_name == 'push'
+
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      short-sha: ${{ steps.meta.outputs.version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Determine environment
+        id: env
+        run: |
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "name=prod"   >> $GITHUB_OUTPUT
+            echo "acr=${{ secrets.ACR_LOGIN_SERVER_PROD }}" >> $GITHUB_OUTPUT
+          else
+            echo "name=staging" >> $GITHUB_OUTPUT
+            echo "acr=${{ secrets.ACR_LOGIN_SERVER_STAGING }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Login no Azure Container Registry
+        uses: azure/docker-login@v1
+        with:
+          login-server: ${{ steps.env.outputs.acr }}
+          username:     ${{ secrets.ACR_USERNAME }}
+          password:     ${{ secrets.ACR_PASSWORD }}
+
+      - name: Docker meta (tags)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.env.outputs.acr }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=,format=short
+            type=raw,value=latest
+
+      - name: Build e Push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=registry,ref=${{ steps.env.outputs.acr }}/${{ env.IMAGE_NAME }}:latest
+          cache-to:   type=inline
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # JOB 3: Deploy do Schema SQL
+  # Executa scripts DDL no banco do ambiente alvo
+  # ════════════════════════════════════════════════════════════════════════════
+  deploy-schema:
+    name: Deploy Schema SQL
+    runs-on: ubuntu-latest
+    needs: build-test
+    if: github.event_name == 'push'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Determine environment
+        id: env
+        run: |
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "sql_server=${{ secrets.SQL_SERVER_PROD }}"   >> $GITHUB_OUTPUT
+            echo "sql_user=${{ secrets.SQL_USER_PROD }}"       >> $GITHUB_OUTPUT
+            echo "sql_pass=${{ secrets.SQL_PASSWORD_PROD }}"   >> $GITHUB_OUTPUT
+          else
+            echo "sql_server=${{ secrets.SQL_SERVER_STAGING }}"  >> $GITHUB_OUTPUT
+            echo "sql_user=${{ secrets.SQL_USER_STAGING }}"      >> $GITHUB_OUTPUT
+            echo "sql_pass=${{ secrets.SQL_PASSWORD_STAGING }}"  >> $GITHUB_OUTPUT
+          fi
+
+      - name: Instalar sqlcmd
+        run: |
+          curl https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
+          curl https://packages.microsoft.com/config/ubuntu/22.04/prod.list | sudo tee /etc/apt/sources.list.d/msprod.list
+          sudo apt-get update && sudo ACCEPT_EULA=Y apt-get install -y mssql-tools unixodbc-dev
+          echo "/opt/mssql-tools/bin" >> $GITHUB_PATH
+
+      - name: Criar banco (idempotente)
+        run: |
+          sqlcmd -S "${{ steps.env.outputs.sql_server }}" \
+                 -U "${{ steps.env.outputs.sql_user }}" \
+                 -P "${{ steps.env.outputs.sql_pass }}" \
+                 -i database/001_CreateDatabase.sql \
+                 -b
+
+      - name: Criar schema (idempotente)
+        run: |
+          sqlcmd -S "${{ steps.env.outputs.sql_server }}" \
+                 -U "${{ steps.env.outputs.sql_user }}" \
+                 -P "${{ steps.env.outputs.sql_pass }}" \
+                 -d LedgerDb \
+                 -i database/002_CreateSchema.sql \
+                 -b
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # JOB 4: Deploy para Staging (branch staging)
+  # ════════════════════════════════════════════════════════════════════════════
+  deploy-staging:
+    name: Deploy — Staging
+    runs-on: ubuntu-latest
+    needs: [docker-build-push, deploy-schema]
+    if: github.ref == 'refs/heads/staging'
+    environment: staging
+
+    steps:
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS_STAGING }}
+
+      - name: Deploy no Container Apps — Staging
+        uses: azure/container-apps-deploy-action@v1
+        with:
+          appSourcePath:         ${{ github.workspace }}
+          acrName:               ${{ secrets.ACR_NAME_STAGING }}
+          containerAppName:      ca-ledger-api-staging
+          resourceGroup:         rg-fidelidade-staging
+          imageToDeploy:         ${{ secrets.ACR_LOGIN_SERVER_STAGING }}/${{ env.IMAGE_NAME }}:${{ needs.docker-build-push.outputs.short-sha }}
+
+      - name: Configurar secrets no Container App
+        run: |
+          az containerapp secret set \
+            --name ca-ledger-api-staging \
+            --resource-group rg-fidelidade-staging \
+            --secrets \
+              write-conn="${{ secrets.SQL_WRITE_CONN_STAGING }}" \
+              read-conn="${{ secrets.SQL_READ_CONN_STAGING }}" \
+              servicebus-conn="${{ secrets.SERVICEBUS_CONN_STAGING }}" \
+              jwt-secret="${{ secrets.JWT_SECRET_STAGING }}"
+
+          az containerapp update \
+            --name ca-ledger-api-staging \
+            --resource-group rg-fidelidade-staging \
+            --set-env-vars \
+              "ConnectionStrings__WriteConnection=secretref:write-conn" \
+              "ConnectionStrings__ReadConnection=secretref:read-conn" \
+              "ConnectionStrings__ServiceBus=secretref:servicebus-conn" \
+              "JwtSettings__SecretKey=secretref:jwt-secret" \
+              "JwtSettings__Issuer=ledger-api" \
+              "JwtSettings__Audience=ledger-clients" \
+              "ASPNETCORE_ENVIRONMENT=Staging" \
+              "ApplicationInsights__ConnectionString=${{ secrets.APPINSIGHTS_CONN_STAGING }}"
+
+      - name: Health check pós-deploy
+        run: |
+          URL="https://$(az containerapp show \
+            --name ca-ledger-api-staging \
+            --resource-group rg-fidelidade-staging \
+            --query properties.configuration.ingress.fqdn -o tsv)/health"
+          
+          for i in {1..10}; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$URL")
+            if [ "$STATUS" = "200" ]; then
+              echo "Health check OK ($URL)"
+              exit 0
+            fi
+            echo "Tentativa $i/10 — status $STATUS. Aguardando 15s..."
+            sleep 15
+          done
+          echo "Health check falhou após 10 tentativas"
+          exit 1
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # JOB 5: Deploy para Produção (branch main — requer aprovação manual)
+  # ════════════════════════════════════════════════════════════════════════════
+  deploy-prod:
+    name: Deploy — Production
+    runs-on: ubuntu-latest
+    needs: [docker-build-push, deploy-schema]
+    if: github.ref == 'refs/heads/main'
+    environment: production   # Requer aprovação manual configurada no GitHub
+
+    steps:
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS_PROD }}
+
+      - name: Deploy no Container Apps — Prod
+        uses: azure/container-apps-deploy-action@v1
+        with:
+          appSourcePath:    ${{ github.workspace }}
+          acrName:          ${{ secrets.ACR_NAME_PROD }}
+          containerAppName: ca-ledger-api-prod
+          resourceGroup:    rg-fidelidade-prod
+          imageToDeploy:    ${{ secrets.ACR_LOGIN_SERVER_PROD }}/${{ env.IMAGE_NAME }}:${{ needs.docker-build-push.outputs.short-sha }}
+
+      - name: Configurar secrets no Container App
+        run: |
+          az containerapp secret set \
+            --name ca-ledger-api-prod \
+            --resource-group rg-fidelidade-prod \
+            --secrets \
+              write-conn="${{ secrets.SQL_WRITE_CONN_PROD }}" \
+              read-conn="${{ secrets.SQL_READ_CONN_PROD }}" \
+              servicebus-conn="${{ secrets.SERVICEBUS_CONN_PROD }}" \
+              jwt-secret="${{ secrets.JWT_SECRET_PROD }}"
+
+          az containerapp update \
+            --name ca-ledger-api-prod \
+            --resource-group rg-fidelidade-prod \
+            --set-env-vars \
+              "ConnectionStrings__WriteConnection=secretref:write-conn" \
+              "ConnectionStrings__ReadConnection=secretref:read-conn" \
+              "ConnectionStrings__ServiceBus=secretref:servicebus-conn" \
+              "JwtSettings__SecretKey=secretref:jwt-secret" \
+              "JwtSettings__Issuer=ledger-api" \
+              "JwtSettings__Audience=ledger-clients" \
+              "ASPNETCORE_ENVIRONMENT=Production" \
+              "ApplicationInsights__ConnectionString=${{ secrets.APPINSIGHTS_CONN_PROD }}"
+
+      - name: Health check pós-deploy
+        run: |
+          URL="https://$(az containerapp show \
+            --name ca-ledger-api-prod \
+            --resource-group rg-fidelidade-prod \
+            --query properties.configuration.ingress.fqdn -o tsv)/health"
+          
+          for i in {1..10}; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$URL")
+            if [ "$STATUS" = "200" ]; then
+              echo "Health check OK ($URL)"
+              exit 0
+            fi
+            echo "Tentativa $i/10 — status $STATUS. Aguardando 15s..."
+            sleep 15
+          done
+          echo "Health check falhou após 10 tentativas"
+          exit 1

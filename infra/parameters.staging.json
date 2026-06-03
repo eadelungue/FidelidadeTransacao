@@ -1,0 +1,11 @@
+{
+  "environment": { "value": "staging" },
+  "location":    { "value": "brazilsouth" },
+  "prefix":      { "value": "fidelidade" },
+  "sqlAdminLogin": { "value": "ledgeradmin" },
+  "sqlAdminPassword": { "value": "SUBSTITUIR_NO_PIPELINE" },
+  "jwtSecretKey":     { "value": "SUBSTITUIR_NO_PIPELINE" },
+  "corsAllowedOrigins": {
+    "value": ["https://staging-gateway.empresa.internal"]
+  }
+}
